@@ -1,0 +1,127 @@
+-- Full SQL Code to Demonstrate Deadlocks, MVCC, and Concurrency Behaviors in StudentEnrollments Table
+
+-- Step 1: Create the StudentEnrollments Table
+-- Note: student_id is the Primary Key.
+
+CREATE TABLE IF NOT EXISTS StudentEnrollments (
+    student_id INT PRIMARY KEY,
+    student_name VARCHAR(100) NOT NULL,
+    course_id VARCHAR(10) NOT NULL,
+    enrollment_date DATE
+);
+
+-- Clear any existing data (for demonstration purposes)
+DELETE FROM StudentEnrollments;
+
+-- Insert initial sample data
+INSERT INTO StudentEnrollments (student_id, student_name, course_id, enrollment_date) VALUES
+    (1, 'Ashish', 'CSE101', '2024-06-01'),
+    (2, 'Smaran', 'CSE102', '2024-06-01'),
+    (3, 'Vaibhav', 'CSE103', '2024-06-01');
+
+-- Verify initial data
+SELECT * FROM StudentEnrollments;
+
+-- Part A: Simulating a Deadlock Between Two Transactions
+-- This requires two separate database sessions (e.g., two terminal windows or connections).
+-- The transactions access rows in reverse order to create a deadlock cycle.
+-- Most DBMS (e.g., PostgreSQL, MySQL InnoDB) will detect and abort one transaction.
+
+-- Session 1 (Transaction 1):
+START TRANSACTION;
+-- Lock row with student_id 1
+UPDATE StudentEnrollments SET enrollment_date = '2024-06-02' WHERE student_id = 1;
+-- Pause briefly (in practice, wait a second)
+-- Then try to lock row with student_id 2 (this will wait if Session 2 has locked it)
+UPDATE StudentEnrollments SET enrollment_date = '2024-06-03' WHERE student_id = 2;
+COMMIT;
+
+-- Session 2 (Transaction 2, run concurrently after Session 1 locks the first row):
+START TRANSACTION;
+-- Lock row with student_id 2 (reverse order)
+UPDATE StudentEnrollments SET enrollment_date = '2024-06-04' WHERE student_id = 2;
+-- Pause briefly
+-- Then try to lock row with student_id 1 (this creates the deadlock cycle)
+UPDATE StudentEnrollments SET enrollment_date = '2024-06-05' WHERE student_id = 1;
+COMMIT;
+
+-- Expected Output: One transaction (e.g., Transaction 2) will be aborted with a deadlock error.
+-- The DBMS rolls back the victim transaction automatically to resolve the deadlock.
+-- Verify final state (only changes from the surviving transaction are committed):
+SELECT * FROM StudentEnrollments;
+
+-- To avoid deadlocks: Ensure consistent lock ordering (e.g., always lock lower student_id first).
+
+-- Part B: Applying MVCC to Prevent Conflicts During Concurrent Reads/Writes
+-- MVCC allows non-blocking reads with consistent snapshots.
+-- Use REPEATABLE READ or SNAPSHOT isolation (default in PostgreSQL; set in MySQL).
+-- Requires two sessions. No SELECT FOR UPDATE; normal SELECT.
+
+-- Set isolation level if needed (e.g., in MySQL: SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;)
+-- In PostgreSQL, it's default.
+
+-- Session 1 (User A: Reader, starts transaction and reads snapshot)
+START TRANSACTION;
+SELECT enrollment_date FROM StudentEnrollments WHERE student_id = 1;  -- Sees '2024-06-01'
+-- Do not commit yet; hold the transaction open to maintain the snapshot.
+
+-- Session 2 (User B: Writer, updates concurrently)
+START TRANSACTION;
+UPDATE StudentEnrollments SET enrollment_date = '2024-07-10' WHERE student_id = 1;
+COMMIT;  -- Update succeeds without blocking Session 1.
+
+-- Back to Session 1: Read again within the same transaction
+SELECT enrollment_date FROM StudentEnrollments WHERE student_id = 1;  -- Still sees old value '2024-06-01' due to MVCC snapshot
+COMMIT;
+
+-- After commit, a new SELECT in Session 1 would see the updated value '2024-07-10'.
+
+-- Expected Output:
+-- User A sees: enrollment_date = 2024-06-01 (consistent snapshot)
+-- User B updates to: 2024-07-10 (no blocking)
+
+-- Part C: Comparing Behavior With and Without MVCC in High-Concurrency
+-- Demonstrate two scenarios using the same row (student_id = 1).
+-- Reset data for demo
+UPDATE StudentEnrollments SET enrollment_date = '2024-06-01' WHERE student_id = 1;
+
+-- Scenario 1: With Traditional Locking (using SELECT FOR UPDATE) - Causes Blocking
+-- Session 1 (Writer with lock):
+START TRANSACTION;
+SELECT * FROM StudentEnrollments WHERE student_id = 1 FOR UPDATE;  -- Acquires exclusive lock
+-- Perform update
+UPDATE StudentEnrollments SET enrollment_date = '2024-07-10' WHERE student_id = 1;
+-- Do not commit yet; hold the lock.
+
+-- Session 2 (Reader): Tries to read with intent to update (blocked)
+START TRANSACTION;
+SELECT * FROM StudentEnrollments WHERE student_id = 1 FOR UPDATE;  -- Blocked until Session 1 commits
+-- Once unblocked, it can proceed.
+COMMIT;
+
+-- Session 1: Commit to release lock
+COMMIT;
+
+-- Expected: Reader (Session 2) blocks until writer commits. (Traditional locking behavior)
+
+-- Reset data for next scenario
+UPDATE StudentEnrollments SET enrollment_date = '2024-06-01' WHERE student_id = 1;
+
+-- Scenario 2: With MVCC (no locking for reads) - No Blocking
+-- Session 1 (Writer):
+START TRANSACTION;
+UPDATE StudentEnrollments SET enrollment_date = '2024-07-10' WHERE student_id = 1;
+-- Do not commit yet.
+
+-- Session 2 (Reader):
+START TRANSACTION;
+SELECT enrollment_date FROM StudentEnrollments WHERE student_id = 1;  -- Sees '2024-06-01' (snapshot), no blocking
+COMMIT;
+
+-- Session 1: Commit the update.
+
+-- Expected: Reader sees 2024-06-01 even while the writer is updating (MVCC enables non-blocking concurrency).
+-- After writer commits, new reads would see 2024-07-10.
+
+-- Verification Query (final state after all demos)
+SELECT * FROM StudentEnrollments;
