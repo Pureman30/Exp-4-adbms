@@ -1,0 +1,120 @@
+-- Full SQL Code to Demonstrate Concurrency Control and Locking in StudentEnrollments Table
+
+-- Step 1: Create the StudentEnrollments Table with Constraints
+-- This ensures enrollment_id is unique (Primary Key), and the pair (student_name, course_id) is unique to prevent duplicate enrollments.
+
+CREATE TABLE IF NOT EXISTS StudentEnrollments (
+    enrollment_id INT PRIMARY KEY,
+    student_name VARCHAR(100) NOT NULL,
+    course_id VARCHAR(10) NOT NULL,
+    enrollment_date DATE,
+    UNIQUE (student_name, course_id)  -- Unique constraint to prevent duplicate enrollments for the same student-course pair
+);
+
+-- Clear any existing data (for demonstration purposes)
+DELETE FROM StudentEnrollments;
+
+-- Insert initial sample data
+INSERT INTO StudentEnrollments (enrollment_id, student_name, course_id, enrollment_date) VALUES
+    (1, 'Ashish', 'CSE101', '2024-07-01'),
+    (2, 'Smaran', 'CSE102', '2024-07-01'),
+    (3, 'Vaibhav', 'CSE101', '2024-07-01');
+
+-- Verify initial data
+SELECT * FROM StudentEnrollments;
+
+-- Part A: Prevent Duplicate Enrollments Using Locking and Unique Constraints
+-- Simulate two concurrent users trying to enroll the same student in the same course.
+-- The unique constraint ensures only one succeeds; transactions handle atomicity.
+-- In practice, this requires two separate sessions. Below is a simulation with comments.
+
+-- Session 1 (User A): Starts transaction and inserts successfully
+BEGIN TRANSACTION;
+INSERT INTO StudentEnrollments (enrollment_id, student_name, course_id, enrollment_date) VALUES
+    (4, 'Ashish', 'CSE102', '2024-07-02');  -- New enrollment: Ashish in CSE102 (unique)
+COMMIT;
+
+-- Session 2 (User B): Tries to insert the same (duplicate) enrollment concurrently
+-- If run while Session 1 is committing, it will fail due to unique constraint violation.
+BEGIN TRANSACTION;
+INSERT INTO StudentEnrollments (enrollment_id, student_name, course_id, enrollment_date) VALUES
+    (5, 'Ashish', 'CSE102', '2024-07-02');  -- Fails: duplicate (student_name, course_id)
+-- Upon failure, ROLLBACK;
+ROLLBACK;
+
+-- Verify Part A (Output: Only User A's insert succeeds; no duplicate)
+SELECT * FROM StudentEnrollments;
+-- Expected: Includes enrollment_id 4 for Ashish in CSE102, but not a duplicate.
+
+-- Part B: Use SELECT FOR UPDATE to Lock Student Record
+-- Demonstrate row-level locking to prevent concurrent updates.
+-- Requires two sessions. Session 1 locks the row; Session 2 is blocked until Session 1 commits.
+
+-- Session 1 (User A): Locks the row with SELECT FOR UPDATE
+START TRANSACTION;
+SELECT * FROM StudentEnrollments WHERE student_name = 'Ashish' AND course_id = 'CSE101' FOR UPDATE;
+-- Row is now locked. Perform some verification or update (e.g., update enrollment_date)
+UPDATE StudentEnrollments SET enrollment_date = '2024-07-03'
+WHERE student_name = 'Ashish' AND course_id = 'CSE101';
+-- Do not commit yet; keep transaction open to simulate lock hold.
+
+-- Session 2 (User B): Tries to update the same locked row (will be blocked)
+START TRANSACTION;
+UPDATE StudentEnrollments SET enrollment_date = '2024-07-04'
+WHERE student_name = 'Ashish' AND course_id = 'CSE101';
+-- This will wait (blocked) until Session 1 commits or rolls back.
+
+-- Back to Session 1: Commit to release the lock
+COMMIT;
+
+-- Now Session 2's update can proceed (after lock release).
+-- Commit Session 2 after it unblocks.
+COMMIT;
+
+-- Verify Part B (Output: The row is updated to the value from the last committed transaction)
+SELECT * FROM StudentEnrollments WHERE student_name = 'Ashish' AND course_id = 'CSE101';
+-- Expected: Shows the final committed update (e.g., enrollment_date '2024-07-04' if Session 2 succeeds post-lock).
+
+-- Part C: Demonstrate Locking Preserving Consistency in Concurrent Transactions
+-- Show how without locking, race conditions can occur, but with locking, updates are serialized.
+-- Again, requires two sessions.
+
+-- First, demonstrate potential issue without locking (for illustration; not recommended).
+-- Session 1: Reads and plans update
+START TRANSACTION;
+SELECT enrollment_date FROM StudentEnrollments WHERE enrollment_id = 1;  -- Reads '2024-07-01'
+-- Plans to update based on read value.
+
+-- Session 2: Concurrently updates without lock
+START TRANSACTION;
+UPDATE StudentEnrollments SET enrollment_date = '2024-07-05' WHERE enrollment_id = 1;
+COMMIT;  -- Changes the value.
+
+-- Session 1: Updates based on stale read (lost update without locking)
+UPDATE StudentEnrollments SET enrollment_date = '2024-07-06' WHERE enrollment_id = 1;
+COMMIT;  -- Overwrites Session 2's change, causing inconsistency.
+
+-- Now, with proper locking to prevent this.
+-- Reset data for demo
+UPDATE StudentEnrollments SET enrollment_date = '2024-07-01' WHERE enrollment_id = 1;
+
+-- Session 1 (with locking):
+START TRANSACTION;
+SELECT * FROM StudentEnrollments WHERE enrollment_id = 1 FOR UPDATE;  -- Locks the row
+-- Read and plan update
+UPDATE StudentEnrollments SET enrollment_date = '2024-07-06' WHERE enrollment_id = 1;
+-- Do not commit yet.
+
+-- Session 2 (tries concurrent update, blocked by lock):
+START TRANSACTION;
+SELECT * FROM StudentEnrollments WHERE enrollment_id = 1 FOR UPDATE;  -- Waits for lock
+-- Once acquired (after Session 1 commits), it can update
+UPDATE StudentEnrollments SET enrollment_date = '2024-07-07' WHERE enrollment_id = 1;
+COMMIT;
+
+-- Session 1: Commit to release lock
+COMMIT;
+
+-- Verify Part C (Output: Updates are serialized; final state is consistent with the last commit, e.g., '2024-07-07')
+SELECT * FROM StudentEnrollments WHERE enrollment_id = 1;
+-- Expected: No lost updates; data remains consistent due to locking serialization.
